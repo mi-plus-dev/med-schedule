@@ -1,0 +1,58 @@
+Куда расширяться дальше
+Когда появятся 1–3 курсы — не трогаете ничего из уже созданного, только:
+
+Создаёте data/michgu/lechebnoe/1-3.json, data/michgu/pediatriya/1-3.json, data/michgu/stomatologiya/1-3.json.
+
+В schedule.json в каждом coursesFiles добавляете строку:
+
+json
+"coursesFiles": {
+  "4-6": ".../4-6.json",
+  "1-3": ".../1-3.json"
+}
+Commit. Всё, приложение само подтянет новые файлы по циклу for (const url of Object.values(files)).
+
+То же самое для:
+
+новой специальности — добавляете блок в specialties с coursesFiles.
+
+нового вуза — добавляете в universities.
+
+нового семестра — либо новый файл 4-6-spring.json, либо новая ветка/тег. Позже обсудим.
+
+Про конспекты
+У вас была вторая сущность — conspects:
+
+text
+schedule.json → curriculumMap["lechebnoe|4|Фак.терапия"] → файл со списком тем
+                                                            → topics[].conspect → файл с конспектом
+Это отдельная структура, она не зависит от разбиения расписания по курсам. Когда будете готовы переносить конспекты с jsonbin — сделаем так же:
+
+text
+repo/
+├── conspects/
+│   └── lechebnoe/
+│       └── 4/
+│           ├── fak-terapiya.json              ← список тем
+│           └── fak-terapiya/
+│               └── infarkt-miokarda.json      ← сам конспект
+И в curriculumMap:
+
+json
+"lechebnoe|4|Фак.терапия": "https://raw.githubusercontent.com/mi-plus-dev/med-schedule/main/conspects/lechebnoe/4/fak-terapiya.json"
+Но это — следующая итерация. Сейчас главное, чтобы расписание работало.
+
+Чек-лист «готово»
+☑ schedule.json в корне — шапка + ссылки
+☑ data/michgu/lechebnoe/4-6.json — курсы 4, 5, 6
+☑ data/michgu/pediatriya/4-6.json — курсы 4, 5, 6
+☑ data/michgu/stomatologiya/4-6.json — курсы 4, 5
+□ Приложение умеет читать coursesFiles и склеивать
+□ Проверили в браузере / DevTools, что расписание отображается
+Что скажете?
+Все три raw-ссылки открылись корректно? (пункт 1 выше)
+
+Приложение уже умеет читать coursesFiles, или надо помочь его переписать? Если второе — покажите код, где сейчас загружается расписание, и я дам готовый патч.
+
+Если всё открылось и приложение работает — поздравляю, jsonbin полностью замещён, и дальше можно спокойно добавлять 1–3 курсы и конспекты.
+

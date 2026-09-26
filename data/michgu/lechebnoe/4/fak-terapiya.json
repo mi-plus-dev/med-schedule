@@ -58,7 +58,7 @@
     },
     {
       "title": "Инфаркт миокарда.",
-      "conspect": "https://api.jsonbin.io/v3/b/6ab06a70ffd5d160531d8c3f"
+      "conspect": "https://raw.githubusercontent.com/mi-plus-dev/med-schedule/refs/heads/main/data/michgu/lechebnoe/4/fak-terapiya/infarkt-miokarda.json"
     },
     {
       "title": "Осложнения инфаркта миокарда.",

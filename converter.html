@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>XLSX → JSON расписание (со разрезом на файлы)</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #0d1117; color: #c9d1d9; min-height: 100vh; padding: 24px;
+  }
+  .app { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 22px; color: #f0f6fc; margin-bottom: 6px; }
+  .sub { font-size: 13px; color: #8b949e; margin-bottom: 20px; }
+  .drop {
+    border: 2px dashed #30363d; border-radius: 12px; padding: 40px 20px;
+    text-align: center; cursor: pointer; transition: all .15s ease;
+    background: #161b22;
+  }
+  .drop:hover, .drop.hover { border-color: #58a6ff; background: #1c2128; }
+  .drop p { font-size: 14px; color: #8b949e; }
+  .drop input { display: none; }
+  .status {
+    margin-top: 16px; padding: 12px 16px; border-radius: 8px;
+    background: #161b22; font-size: 13px; font-family: ui-monospace, monospace;
+    white-space: pre-wrap; display: none;
+  }
+  .status.show { display: block; }
+  .status.err { background: #3d1f22; color: #ffb3b3; }
+  .status.ok  { background: #1f3d2a; color: #b3ffcc; }
+
+  #files { margin-top: 24px; }
+  #files h2 { font-size: 15px; color: #f0f6fc; margin-bottom: 12px; }
+  .card {
+    background: #161b22; border: 1px solid #30363d; border-radius: 10px;
+    padding: 14px 18px; margin-bottom: 12px;
+  }
+  .card h3 {
+    font-family: ui-monospace, monospace; font-size: 14px;
+    color: #58a6ff; margin-bottom: 4px; word-break: break-all;
+  }
+  .card .meta { font-size: 12px; color: #8b949e; margin-bottom: 10px; }
+  .card .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  button {
+    padding: 7px 14px; font-size: 13px; font-weight: 600;
+    border: 1px solid #30363d; background: #21262d; color: #c9d1d9;
+    border-radius: 6px; cursor: pointer; transition: all .15s ease;
+  }
+  button:hover { background: #30363d; border-color: #58a6ff; }
+  button.primary { background: #238636; border-color: #2ea043; color: #fff; }
+  button.primary:hover { background: #2ea043; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  details { margin-top: 10px; }
+  details summary { cursor: pointer; color: #8b949e; font-size: 12px; }
+  details pre {
+    margin-top: 8px; padding: 12px; background: #0d1117;
+    border: 1px solid #30363d; border-radius: 6px;
+    font-size: 11.5px; line-height: 1.45; max-height: 340px; overflow: auto;
+    white-space: pre-wrap; color: #7ee787;
+  }
+  .note {
+    background: #0d1626; border: 1px solid #1f6feb; border-radius: 8px;
+    padding: 10px 14px; margin-top: 16px; font-size: 12.5px; color: #c9d1d9;
+  }
+  .note b { color: #58a6ff; }
+  code {
+    background: #21262d; padding: 1px 6px; border-radius: 4px;
+    font-family: ui-monospace, monospace; font-size: 12px;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <h1>XLSX → JSON расписание</h1>
+  <div class="sub">МиЧГУ · конвертер + разрез на <code>schedule.json</code> и файлы по специальностям</div>
+
+  <!-- Зона drag & drop -->
+  <div class="drop" id="drop">
+    <p>Перетащи XLSX сюда или нажми для выбора</p>
+    <input type="file" id="file" accept=".xlsx,.xls">
+  </div>
+
+  <!-- Лог -->
+  <div class="status" id="status"></div>
+
+  <!-- Карточки с готовыми файлами -->
+  <div id="files"></div>
+
+  <div class="note" id="howto" style="display:none">
+    <b>Как загрузить на GitHub:</b> открой репозиторий → <b>Add file → Create new file</b>
+    → в поле имени введи <b>весь путь целиком</b> (например
+    <code>data/michgu/lechebnoe/4-6.json</code>) → вставь содержимое → <b>Commit changes</b>.
+  </div>
+</div>
+
+<script>
+'use strict';
+
+/* =====================================================================
+   НАСТРОЙКИ GITHUB
+   Используются, чтобы собрать абсолютные raw-ссылки в schedule.json.
+   ===================================================================== */
+const GITHUB_LOGIN  = 'mi-plus-dev';
+const GITHUB_REPO   = 'med-schedule';
+const GITHUB_BRANCH = 'main';
+const RAW_BASE = `https://raw.githubusercontent.com/${GITHUB_LOGIN}/${GITHUB_REPO}/${GITHUB_BRANCH}/`;
+
+/* =====================================================================
+   1. СЛОВАРИ И РЕГУЛЯРКИ
+   ===================================================================== */
+
+// Русские названия дней → английские ключи JSON
+const DAY_RU_TO_EN = {
+  'понедельник': 'monday',
+  'вторник':     'tuesday',
+  'среда':       'wednesday',
+  'четверг':     'thursday',
+  'пятница':     'friday',
+  'суббота':     'saturday'
+};
+const DAY_NAMES_RU = Object.keys(DAY_RU_TO_EN);
+
+// Известные места прохождения практики.
+// Порядок важен — длинные проверяются раньше коротких ("РКБСМП" раньше "РКБ").
+const KNOWN_PLACES = [
+  'РКБСМП', 'РКГВВ', 'РКЦОиР', 'РКЦИБ', 'РБСМЭ', 'РПНД',
+  'ГЦРБ', 'ДКБ №2', 'ДКБ № 2', 'СП №1', 'СП № 1',
+  'КБ №4', 'КБ № 4', 'КБ №5', 'КБ № 5', 'КБ №1', 'КБ № 1',
+  'РКВД', 'РДКБ', 'РПЦ', 'РСП', 'РНД', 'СЦ', 'РКБ', 'Берс', 'МИ', 'РЦФП'
+];
+
+// Фолбэк, если места нет в KNOWN_PLACES, но оно по форме "КБ №N", "Пол. №N" и т.д.
+const PLACE_REGEX = /(?:^|[\s.])(КБ\s*№\s*\d+|ДКБ\s*№\s*\d+|СП\s*№\s*\d+|Пол\.\s*№\s*\d+|Дет\.\s*пол\.\s*№\s*\d+|РКБ\s*СМП)\s*\.?\s*$/i;
+
+// Регулярка для распознавания ФИО в конце строки.
+// Ловит: "Иванов И.И.", "Иванов И.И", "Иванов И-А.Ш.", "Иванов Иван Иванович",
+// и списки через запятую: "Иванов И.И., Петров П.П.".
+const FIO_REGEX = /([А-ЯЁ][а-яё\-]+(?:\s*(?:[А-ЯЁ][а-яё\-]+|[А-ЯЁ]\.?(?:\s*[-–]\s*[А-ЯЁ])?\.?))+)(?:\s*,\s*[А-ЯЁ][а-яё\-]+(?:\s*(?:[А-ЯЁ][а-яё\-]+|[А-ЯЁ]\.?(?:\s*[-–]\s*[А-ЯЁ])?\.?))+)*\s*\.?\s*$/;
+
+// Соответствие листов практики → специальность/курс
+const PRACTICE_SHEET_MAP = {
+  '4ЛД': { spec: 'lechebnoe',     course: 4 },
+  '4П':  { spec: 'pediatriya',    course: 4 },
+  '4СТ': { spec: 'stomatologiya', course: 4 },
+  '5ЛД': { spec: 'lechebnoe',     course: 5 },
+  '5П':  { spec: 'pediatriya',    course: 5 },
+  '5СТ': { spec: 'stomatologiya', course: 5 },
+  '6ЛД': { spec: 'lechebnoe',     course: 6 },
+  '6П':  { spec: 'pediatriya',    course: 6 }
+};
+
+// Соответствие листов лекций → специальность
+const LECTURE_SHEET_MAP = {
+  'лз. лечебное дело': 'lechebnoe',
+  'лз. педиатрия':     'pediatriya',
+  'лз. стоматология':  'stomatologiya'
+};
+
+/* =====================================================================
+   2. УТИЛИТЫ
+   ===================================================================== */
+
+/** Экранирует спецсимволы регулярки в строке. */
+function escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Приводит значение ячейки к строке: заменяет <br>, &nbsp;, схлопывает пробелы. */
+function clean(v) {
+  if (v == null) return '';
+  return String(v)
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** "01.09" → "2026-09-01". Год: сентябрь–декабрь = 2026, январь–август = 2027. */
+function parseDate(ddmmyy) {
+  const m = String(ddmmyy).trim().match(/^(\d{1,2})\.(\d{2})$/);
+  if (!m) return null;
+  const day   = m[1].padStart(2, '0');
+  const month = parseInt(m[2], 10);
+  const year  = month >= 9 ? 2026 : 2027;
+  return `${year}-${String(month).padStart(2, '0')}-${day}`;
+}
+
+/** "01.09-21.09" → {from, to}; "01.09" → {from, to} с одинаковыми датами. */
+function parseDateRange(str) {
+  const s = str.trim();
+  if (s.includes('-')) {
+    const [a, b] = s.split('-');
+    const from = parseDate(a);
+    const to   = parseDate(b);
+    return (from && to) ? { from, to } : null;
+  }
+  const d = parseDate(s);
+  return d ? { from: d, to: d } : null;
+}
+
+/** Разбирает заголовок колонки: "4 КУРС (2 ПОТОК). АУД. Б3-01" → {course, stream, audience}. */
+function parseHeader(header) {
+  const h = clean(header);
+  if (!h) return null;
+
+  const courseMatch = h.match(/(\d)\s*КУРС/i);
+  if (!courseMatch) return null;
+  const course = parseInt(courseMatch[1], 10);
+
+  let stream = null;
+  const streamMatch = h.match(/\((\d)\s*ПОТОК\)/i);
+  if (streamMatch) stream = parseInt(streamMatch[1], 10);
+
+  let audience = null;
+  const audMatch = h.match(/АУД\.\s*([^)\s]+(?:[-–]\d+)?)/i);
+  if (audMatch) audience = audMatch[1].trim();
+
+  return { course, stream, audience };
+}
+
+/** Нормализует название места: "СП № 1" → "СП №1", "КБ№4" → "КБ №4". */
+function normalizePlace(place) {
+  if (!place) return place;
+  let s = String(place).trim().replace(/\s+/g, ' ');
+  // Ставим один пробел перед «№» и убираем пробелы после него
+  s = s.replace(/\s*№\s*/g, ' №');
+  return s;
+}
+
+/* =====================================================================
+   3. ПАРСЕР ПРАКТИКИ (ячейки листов вида 4ЛД, 5ЛД, ...)
+   ===================================================================== */
+
+/**
+ * Разбирает одну ячейку с практикой.
+ * Может содержать несколько диапазонов через ";" — тогда вернётся массив.
+ * Формат: "01.09-21.09 Топ.анатомия Межидов С.-М.Н МИ"
+ * Возвращает массив {from, to, discipline, teacher, place}.
+ */
+function parsePracticeCell(raw) {
+  let s = clean(raw);
+  if (!s) return [];
+
+  const parts = s.split(';').map(p => p.trim()).filter(Boolean);
+  if (parts.length === 0) return [];
+
+  // Разбираем все диапазоны дат, остальной текст скидываем в tail
+  const ranges = [];
+  let tail = '';
+  for (const part of parts) {
+    const dateMatch = part.match(/^(\d{1,2}\.\d{2}(?:\s*-\s*\d{1,2}\.\d{2})?)\s*(.*)$/);
+    if (dateMatch) {
+      const range = parseDateRange(dateMatch[1].replace(/\s+/g, ''));
+      if (range) ranges.push(range);
+      if (dateMatch[2]) tail += ' ' + dateMatch[2];
+    } else {
+      tail += ' ' + part;
+    }
+  }
+  if (ranges.length === 0) return [];
+
+  tail = tail.trim();
+
+  // Защита от того, что регексп ФИО может «съесть» часть названий дисциплин
+  tail = tail.replace(/АМПДиП/g, '__AMP__');
+  tail = tail.replace(/Детская ЧЛХ/g, '__DCHLX__');
+
+  /* ---------- 3.1. Место (из хвоста строки) ---------- */
+  let place = null;
+  for (const p of KNOWN_PLACES) {
+    const re = new RegExp('[\\s.]+' + escapeRegex(p) + '\\.?\\s*$', 'i');
+    if (re.test(tail)) {
+      place = normalizePlace(p);
+      tail  = tail.replace(re, '').trim();
+      break;
+    }
+  }
+  if (!place) {
+    const pm = tail.match(PLACE_REGEX);
+    if (pm) {
+      place = normalizePlace(pm[1]);
+      tail  = tail.slice(0, tail.length - pm[0].length).trim();
+    }
+  }
+
+  /* ---------- 3.2. Преподаватель (из хвоста) ---------- */
+  let teacher = null;
+
+  const vacMatch = tail.match(/(Вакансия(?:\s*\d+(?:\.\d+)?(?:\.\S+)?)?)\s*\.?\s*$/i);
+  if (vacMatch) {
+    teacher = vacMatch[1].replace(/\s+/g, ' ').trim();
+    tail    = tail.slice(0, tail.length - vacMatch[0].length).trim();
+  } else {
+    const fm = tail.match(FIO_REGEX);
+    if (fm) {
+      teacher = fm[0].replace(/\s+/g, ' ').trim().replace(/[.\s]+$/, '.');
+      tail    = tail.slice(0, tail.length - fm[0].length).trim();
+    }
+  }
+
+  /* ---------- 3.3. Дисциплина (всё, что осталось) ---------- */
+  let discipline = tail.replace(/[.\s,]+$/, '').replace(/\s+/g, ' ').trim();
+  if (!discipline) discipline = '—';
+
+  // Восстанавливаем скрытые маркеры
+  discipline = discipline.replace(/__AMP__/g, 'АМПДиП').replace(/__DCHLX__/g, 'Детская ЧЛХ');
+
+  return ranges.map(r => ({
+    from: r.from,
+    to: r.to,
+    discipline,
+    teacher: teacher || null,
+    place:   place   || null
+  }));
+}
+
+/**
+ * Разбирает лист практики. Возвращает { groups: [...], rotations: { "401": [...] } }.
+ * Находит блоки-заголовки с номерами групп (4xx, 5xx, 6xx) и под каждым читает столбец.
+ */
+function parsePracticeSheet(sheet) {
+  const data = XLSX.utils.sheet_to_json(sheet, {
+    header: 1, defval: '', blankrows: true, raw: false
+  });
+
+  // Ищем все строки, где >= 3 ячеек выглядят как номер группы: 4xx/5xx/6xx
+  const headers = [];
+  for (let r = 0; r < data.length; r++) {
+    const row    = data[r];
+    const groups = {};
+    let count    = 0;
+    for (let c = 0; c < row.length; c++) {
+      const v = clean(row[c]);
+      if (/^[456]\d{2}$/.test(v)) { groups[v] = c; count++; }
+    }
+    if (count >= 3) headers.push({ rowIdx: r, groups });
+  }
+  if (headers.length === 0) return { groups: [], rotations: {} };
+
+  const allGroups = [];
+  const rotations = {};
+
+  for (let i = 0; i < headers.length; i++) {
+    const h        = headers[i];
+    const nextRow  = (i + 1 < headers.length) ? headers[i + 1].rowIdx : data.length;
+
+    for (const [group, colIdx] of Object.entries(h.groups)) {
+      if (!allGroups.includes(group)) allGroups.push(group);
+      const list = [];
+      // Читаем все строки между текущим и следующим заголовком
+      for (let r = h.rowIdx + 1; r < nextRow; r++) {
+        const parsed = parsePracticeCell(data[r][colIdx]);
+        for (const entry of parsed) list.push(entry);
+      }
+      if (list.length > 0) rotations[group] = list;
+    }
+  }
+
+  return { groups: allGroups, rotations };
+}
+
+/* =====================================================================
+   4. ПАРСЕР ЛЕКЦИЙ (листы «лз. лечебное дело», «лз. педиатрия», ...)
+   ===================================================================== */
+
+/**
+ * Разбирает лист лекций. Находит строку «Дни недели», а под ней блоки
+ * колонок для каждого потока. В каждой паре строк: верхняя = 1 неделя,
+ * нижняя = 2 неделя.
+ */
+function parseLectureSheet(sheet, specialtyId) {
+  const data = XLSX.utils.sheet_to_json(sheet, {
+    header: 1, defval: '', blankrows: true, raw: false
+  });
+
+  const result = [];
+
+  // Ищем строку-заголовок с «Дни недели»
+  let headerRowIdx = -1;
+  for (let r = 0; r < data.length; r++) {
+    if (data[r].some(c => clean(c).toLowerCase().startsWith('дни недели'))) {
+      headerRowIdx = r;
+      break;
+    }
+  }
+  if (headerRowIdx === -1) return result;
+
+  const headerRow = data[headerRowIdx];
+
+  // Находим начала блоков — все колонки, где стоит «Дни недели»
+  const blockStarts = [];
+  for (let c = 0; c < headerRow.length; c++) {
+    if (clean(headerRow[c]).toLowerCase().startsWith('дни недели')) {
+      blockStarts.push(c);
+    }
+  }
+
+  // Обрабатываем каждый блок
+  for (let bi = 0; bi < blockStarts.length; bi++) {
+    const startCol = blockStarts[bi];
+    const endCol   = (bi + 1 < blockStarts.length) ? blockStarts[bi + 1] : headerRow.length;
+
+    const dayCol  = startCol;
+    const timeCol = startCol + 1;
+
+    // Колонки потоков: те, у которых в заголовке есть «N КУРС (M ПОТОК). АУД. …»
+    const streamCols = [];
+    for (let c = startCol + 2; c < endCol; c++) {
+      const hdr = parseHeader(headerRow[c]);
+      if (hdr) streamCols.push({ col: c, ...hdr });
+    }
+    if (streamCols.length === 0) continue;
+
+    let currentDay  = null;
+    let currentTime = null;
+    let topRowIdx   = -1;
+
+    for (let r = headerRowIdx + 1; r < data.length; r++) {
+      const row = data[r];
+
+      // Обновляем текущий день
+      const dayCell = clean(row[dayCol]).toLowerCase();
+      if (DAY_NAMES_RU.includes(dayCell)) currentDay = DAY_RU_TO_EN[dayCell];
+
+      const timeCell = clean(row[timeCol]);
+
+      // Время в колонке «Часы» открывает новую пару
+      if (timeCell && /^\d{1,2}:\d{2}/.test(timeCell)) {
+        currentTime = timeCell.replace(/\s+/g, '').split('-')[0] || timeCell;
+        topRowIdx   = r;
+        continue;
+      }
+
+      // Следующая строка после времени = нижняя половина пары (2 неделя)
+      if (topRowIdx === r - 1 && currentTime && currentDay) {
+        const topRow = data[topRowIdx];
+        const botRow = row;
+
+        for (const sc of streamCols) {
+          const topVal = clean(topRow[sc.col]);
+          const botVal = clean(botRow[sc.col]);
+
+          if (topVal) result.push(buildLecture(sc, currentDay, 1, currentTime, topVal, specialtyId));
+          if (botVal) result.push(buildLecture(sc, currentDay, 2, currentTime, botVal, specialtyId));
+        }
+
+        topRowIdx   = -1;
+        currentTime = null;
+      }
+    }
+  }
+
+  return result;
+}
+
+/** Из ячейки лекции собирает объект {course, stream, day, week, time, discipline, teacher, audience}. */
+function buildLecture(sc, day, week, time, cellValue, specialtyId) {
+  let text = clean(cellValue);
+
+  // Защита от «съедания» хвоста регекспом ФИО (см. parsePracticeCell)
+  text = text.replace(/АМПДиП/g, '__AMP__');
+  text = text.replace(/Детская ЧЛХ/g, '__DCHLX__');
+
+  // Аудитория по умолчанию — из заголовка блока
+  let audience = sc.audience;
+  if (audience) audience = normalizePlace(audience);
+
+  // Аудитория в самой ячейке: "...Ауд. Г4-01" — перекрывает заголовок
+  const audMatch = text.match(/\s*Ауд\.\s*([^\s)]+)\s*$/i);
+  if (audMatch) {
+    audience = audMatch[1].trim();
+    text     = text.slice(0, text.length - audMatch[0].length).trim();
+  }
+
+  // Преподаватель в конце строки
+  let teacher    = null;
+  let discipline = text;
+
+  const vacMatch = text.match(/(Вакансия(?:\s*\d+(?:\.\d+)?(?:\.\S+)?)?)\s*\.?\s*$/i);
+  if (vacMatch) {
+    teacher    = vacMatch[1].trim();
+    discipline = text.slice(0, text.length - vacMatch[0].length).trim();
+  } else {
+    const fm = text.match(FIO_REGEX);
+    if (fm) {
+      teacher    = fm[0].replace(/\s+/g, ' ').trim().replace(/[.\s]+$/, '.');
+      discipline = text.slice(0, text.length - fm[0].length).trim();
+    }
+  }
+
+  discipline = discipline.replace(/[.\s]+$/, '').trim();
+  if (!discipline) discipline = '—';
+  discipline = discipline.replace(/__AMP__/g, 'АМПДиП').replace(/__DCHLX__/g, 'Детская ЧЛХ');
+
+  return {
+    course: sc.course,
+    stream: sc.stream,
+    day,
+    week,
+    time,
+    discipline,
+    teacher:  teacher  || null,
+    audience: audience || null
+  };
+}
+
+/* =====================================================================
+   5. СБОРКА БОЛЬШОГО JSON
+   ===================================================================== */
+
+/**
+ * Проходит по всем листам книги и собирает один большой объект:
+ * { version, holidays, universities.michgu.specialties.*.courses, curriculumMap }.
+ * Дальше этот объект режется на 4 файла (см. splitToFiles).
+ */
+function convert(workbook) {
+  const warnings = [];
+
+  // Каркас большого JSON
+  const big = {
+    version: null,  // определим ниже по датам
+    holidays: [
+      { from: '2026-12-31', to: '2027-01-10', name: 'Новогодние каникулы' }
+    ],
+    universities: {
+      michgu: {
+        shortName: 'МиЧГУ',
+        fullName:  'Медицинский институт ЧГУ им. А.А. Кадырова',
+        specialties: {
+          lechebnoe:     { name: 'Лечебное дело', courses: {} },
+          pediatriya:    { name: 'Педиатрия',     courses: {} },
+          stomatologiya: { name: 'Стоматология',  courses: {} }
+        }
+      }
+    }
+  };
+
+  // Разбираем листы
+  const lectureData  = { lechebnoe: [], pediatriya: [], stomatologiya: [] };
+  const practiceData = {};  // "4ЛД" → { groups, rotations }
+
+  for (const sheetName of workbook.SheetNames) {
+    const sheet     = workbook.Sheets[sheetName];
+    const nameLower = sheetName.toLowerCase().trim();
+
+    // Лист лекций
+    if (LECTURE_SHEET_MAP[nameLower]) {
+      const specId = LECTURE_SHEET_MAP[nameLower];
+      try {
+        lectureData[specId].push(...parseLectureSheet(sheet, specId));
+      } catch (e) {
+        warnings.push(`Ошибка на листе "${sheetName}": ${e.message}`);
+      }
+      continue;
+    }
+
+    // Лист практики
+    if (PRACTICE_SHEET_MAP[sheetName]) {
+      try {
+        practiceData[sheetName] = parsePracticeSheet(sheet);
+      } catch (e) {
+        warnings.push(`Ошибка на листе "${sheetName}": ${e.message}`);
+      }
+      continue;
+    }
+    // Прочие листы игнорируем
+  }
+
+  // Раскладываем практику и лекции по курсам
+  for (const [sheetName, parsed] of Object.entries(practiceData)) {
+    const { spec, course } = PRACTICE_SHEET_MAP[sheetName];
+    const specObj = big.universities.michgu.specialties[spec];
+    if (!specObj) continue;
+
+    const courseKey = String(course);
+    if (!specObj.courses[courseKey]) {
+      specObj.courses[courseKey] = { groups: [], lectures: [], rotations: {} };
+    }
+    const courseObj = specObj.courses[courseKey];
+
+    courseObj.groups    = parsed.groups.slice().sort();
+    courseObj.rotations = parsed.rotations;
+
+    // Лекции: только этого курса, без поля course (курс уже на уровне выше)
+    const lectures = lectureData[spec].filter(l => l.course === course);
+    courseObj.lectures = lectures.map(l => {
+      const out = {
+        day: l.day, week: l.week, time: l.time,
+        discipline: l.discipline, teacher: l.teacher, audience: l.audience
+      };
+      if (l.stream) out.stream = l.stream;
+      return out;
+    });
+
+    // Специальные потоки Лечебного дела 4 курса: 1 = 401–410, 2 = 411–420
+    if (spec === 'lechebnoe' && course === 4) {
+      const streams = { '1': [], '2': [] };
+      for (const g of courseObj.groups) {
+        const n = parseInt(g, 10);
+        if (n >= 401 && n <= 410)      streams['1'].push(g);
+        else if (n >= 411 && n <= 420) streams['2'].push(g);
+      }
+      courseObj.lectureStreams = streams;
+    }
+  }
+
+  // version определяем по самой ранней дате в rotations
+  big.version = detectSemester(big);
+
+  // curriculumMap собираем из дисциплин, которые встречаются в ротациях
+  const keys = new Set();
+  for (const [specId, spec] of Object.entries(big.universities.michgu.specialties)) {
+    for (const [courseNum, course] of Object.entries(spec.courses || {})) {
+      for (const rotations of Object.values(course.rotations || {})) {
+        for (const r of rotations) {
+          if (r.discipline) keys.add(`${specId}|${courseNum}|${r.discipline}`);
+        }
+      }
+    }
+  }
+  big.curriculumMap = {};
+  Array.from(keys).sort().forEach(k => { big.curriculumMap[k] = ''; });
+
+  return { json: big, warnings };
+}
+
+/** Определяет "YYYY-fall"/"YYYY-spring" по самой ранней дате в rotations. */
+function detectSemester(big) {
+  let earliest = null;
+  for (const spec of Object.values(big.universities.michgu.specialties)) {
+    for (const course of Object.values(spec.courses)) {
+      for (const list of Object.values(course.rotations)) {
+        for (const r of list) {
+          if (!r.from) continue;
+          if (!earliest || r.from < earliest) earliest = r.from;
+        }
+      }
+    }
+  }
+  if (!earliest) {
+    const now = new Date();
+    return `${now.getFullYear()}-${now.getMonth() + 1 >= 9 ? 'fall' : 'spring'}`;
+  }
+  const year  = parseInt(earliest.slice(0, 4), 10);
+  const month = parseInt(earliest.slice(5, 7), 10);
+  return month >= 9 ? `${year}-fall` : `${year}-spring`;
+}
+
+/* =====================================================================
+   6. РАЗРЕЗ БОЛЬШОГО JSON НА 4 ФАЙЛА  ← НОВЫЙ БЛОК
+   ===================================================================== */
+
+/**
+ * Берёт большой JSON (как из convert) и возвращает массив файлов:
+ *   [
+ *     { path, flatName, content },   // schedule.json
+ *     { path, flatName, content },   // data/michgu/lechebnoe/<range>.json
+ *     ...
+ *   ]
+ *
+ * Для каждой специальности вычисляется диапазон курсов по фактическим ключам
+ * ("4","5","6" → "4-6"; "1","2","3" → "1-3").
+ */
+function splitToFiles(big) {
+  const files = [];
+  const michgu = big.universities.michgu;
+
+  // Заготовка для лёгкого schedule.json
+  const specRefs = {};
+
+  for (const [specId, spec] of Object.entries(michgu.specialties)) {
+    const courseNums = Object.keys(spec.courses).map(Number).sort((a, b) => a - b);
+    if (courseNums.length === 0) continue;
+
+    const min = courseNums[0];
+    const max = courseNums[courseNums.length - 1];
+    const rangeKey = `${min}-${max}`;   // "4-6", "1-3" и т.д.
+
+    // Файл с курсами специальности
+    files.push({
+      path:     `data/michgu/${specId}/${rangeKey}.json`,
+      flatName: `${specId}-${rangeKey}.json`,
+      content:  JSON.stringify(spec.courses, null, 2)
+    });
+
+    // Ссылка для лёгкого schedule.json
+    specRefs[specId] = {
+      name: spec.name,
+      coursesFiles: {
+        [rangeKey]: `${RAW_BASE}data/michgu/${specId}/${rangeKey}.json`
+      }
+    };
+  }
+
+  // Собираем лёгкий schedule.json
+  const light = {
+    version:            big.version,
+    holidays:           big.holidays,
+    conspectsBasePath:  RAW_BASE,
+    universities: {
+      michgu: {
+        shortName:  michgu.shortName,
+        fullName:   michgu.fullName,
+        specialties: specRefs
+      }
+    },
+    curriculumMap: big.curriculumMap
+  };
+
+  // Лёгкий schedule.json ставим первым
+  files.unshift({
+    path:     'schedule.json',
+    flatName: 'schedule.json',
+    content:  JSON.stringify(light, null, 2)
+  });
+
+  return files;
+}
+
+/* =====================================================================
+   7. UI
+   ===================================================================== */
+
+const dropEl  = document.getElementById('drop');
+const fileEl  = document.getElementById('file');
+const statusEl= document.getElementById('status');
+const filesEl = document.getElementById('files');
+const howtoEl = document.getElementById('howto');
+
+let currentFiles = [];  // массив файлов, полученных после splitToFiles
+
+function showStatus(msg, type) {
+  statusEl.textContent = msg;
+  statusEl.className = 'status show' + (type ? ' ' + type : '');
+}
+
+function fmtSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1024 / 1024).toFixed(2) + ' MB';
+}
+
+function download(filename, text) {
+  const blob = new Blob([text], { type: 'application/json;charset=utf-8' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function copyText(text, btn) {
+  navigator.clipboard.writeText(text).then(() => {
+    const orig = btn.textContent;
+    btn.textContent = '✓ Скопировано';
+    btn.disabled    = true;
+    setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 1500);
+  }).catch(err => showStatus('Не удалось скопировать: ' + err.message, 'err'));
+}
+
+/** Рисует карточки с готовыми файлами. */
+function renderFiles(files) {
+  filesEl.innerHTML = '';
+  if (files.length === 0) return;
+
+  const h2 = document.createElement('h2');
+  h2.textContent = 'Готово. Файлов: ' + files.length;
+  filesEl.appendChild(h2);
+
+  for (const f of files) {
+    const card = document.createElement('div');
+    card.className = 'card';
+
+    const h3 = document.createElement('h3');
+    h3.textContent = f.path;
+
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    const bytes = new Blob([f.content]).size;
+    meta.textContent = `${fmtSize(bytes)} · имя для скачивания: ${f.flatName}`;
+
+    const row = document.createElement('div');
+    row.className = 'row';
+
+    const btnDl = document.createElement('button');
+    btnDl.className = 'primary';
+    btnDl.textContent = '📥 Скачать ' + f.flatName;
+    btnDl.onclick = () => download(f.flatName, f.content);
+
+    const btnCopy = document.createElement('button');
+    btnCopy.textContent = '📋 Скопировать';
+    btnCopy.onclick = () => copyText(f.content, btnCopy);
+
+    row.appendChild(btnDl);
+    row.appendChild(btnCopy);
+
+    // Раскрывающийся предпросмотр (первые 4000 символов)
+    const details = document.createElement('details');
+    const summary = document.createElement('summary');
+    summary.textContent = 'Показать содержимое';
+    const pre = document.createElement('pre');
+    pre.textContent = f.content.length > 4000
+      ? f.content.slice(0, 4000) + '\n… (усечено для предпросмотра)'
+      : f.content;
+    details.appendChild(summary);
+    details.appendChild(pre);
+
+    card.appendChild(h3);
+    card.appendChild(meta);
+    card.appendChild(row);
+    card.appendChild(details);
+    filesEl.appendChild(card);
+  }
+
+  howtoEl.style.display = 'block';
+}
+
+/** Основной обработчик выбранного XLSX. */
+function processFile(file) {
+  filesEl.innerHTML = '';
+  howtoEl.style.display = 'none';
+  showStatus('Читаю файл…');
+
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const data = new Uint8Array(e.target.result);
+      const wb   = XLSX.read(data, { type: 'array' });
+      showStatus('Файл прочитан. Листы: ' + wb.SheetNames.join(', '));
+
+      // 1) Большой JSON
+      const { json, warnings } = convert(wb);
+
+      // 2) Разрез на файлы
+      currentFiles = splitToFiles(json);
+
+      // 3) Отрисовка
+      renderFiles(currentFiles);
+
+      // Статистика
+      let stats = 'Готово.\n';
+      for (const [specId, spec] of Object.entries(json.universities.michgu.specialties)) {
+        for (const [courseNum, course] of Object.entries(spec.courses)) {
+          stats += `  ${spec.name}, ${courseNum} курс: `;
+          stats += `${course.groups.length} групп, `;
+          stats += `${course.lectures.length} лекций, `;
+          stats += `${Object.keys(course.rotations).length} групп с практикой\n`;
+        }
+      }
+      if (warnings.length) stats += '\n⚠ Предупреждения:\n' + warnings.join('\n');
+      showStatus(stats, warnings.length ? 'err' : 'ok');
+
+    } catch (err) {
+      showStatus('Ошибка: ' + err.message + '\n' + (err.stack || ''), 'err');
+    }
+  };
+  reader.onerror = () => showStatus('Не удалось прочитать файл', 'err');
+  reader.readAsArrayBuffer(file);
+}
+
+// Drag & drop + выбор файла
+dropEl.addEventListener('click', () => fileEl.click());
+fileEl.addEventListener('change', e => {
+  if (e.target.files[0]) processFile(e.target.files[0]);
+});
+['dragenter', 'dragover'].forEach(ev => {
+  dropEl.addEventListener(ev, e => {
+    e.preventDefault(); e.stopPropagation();
+    dropEl.classList.add('hover');
+  });
+});
+['dragleave', 'drop'].forEach(ev => {
+  dropEl.addEventListener(ev, e => {
+    e.preventDefault(); e.stopPropagation();
+    dropEl.classList.remove('hover');
+  });
+});
+dropEl.addEventListener('drop', e => {
+  const f = e.dataTransfer.files[0];
+  if (f) processFile(f);
+});
+</script>
+</body>
+</html>

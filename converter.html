@@ -1,4 +1,3 @@
-  <!-- Переводит XLSS файл расписания в JSON файлы для ручной загрузки на GitHub -->
 <!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -137,7 +136,25 @@ const PLACE_REGEX = /(?:^|[\s.])(КБ\s*№\s*\d+|ДКБ\s*№\s*\d+|СП\s*№\
 // Регулярка для распознавания ФИО в конце строки.
 // Ловит: "Иванов И.И.", "Иванов И.И", "Иванов И-А.Ш.", "Иванов Иван Иванович",
 // и списки через запятую: "Иванов И.И., Петров П.П.".
-const FIO_REGEX = /([А-ЯЁ][а-яё\-]+(?:\s*(?:[А-ЯЁ][а-яё\-]+|[А-ЯЁ]\.?(?:\s*[-–]\s*[А-ЯЁ])?\.?))+)(?:\s*,\s*[А-ЯЁ][а-яё\-]+(?:\s*(?:[А-ЯЁ][а-яё\-]+|[А-ЯЁ]\.?(?:\s*[-–]\s*[А-ЯЁ])?\.?))+)*\s*\.?\s*$/;
+// Суффиксы популярных русских фамилий + "-ули" для Ферзаули.
+// Проверено: ни одна дисциплина не оканчивается на эти суффиксы,
+// так что ложных срабатываний на дисциплинах не будет.
+const SURNAME_SUFFIX = '(?:ская|цкая|ский|цкий|ова|ева|ёва|ина|ына|ов|ев|ёв|ин|ын|ули)';
+
+// ФИО = Фамилия + (инициалы или ещё слова).
+// Первое слово ОБЯЗАТЕЛЬНО оканчивается на суффикс фамилии — это
+// отсекает дисциплины типа "Неврология", которые иначе могли бы
+// «съесть» преподавателя вместе с дисциплиной.
+const FIO_REGEX = new RegExp(
+  '(' +
+    '[А-ЯЁ][а-яё\\-]*' + SURNAME_SUFFIX +
+    '(?:\\s*(?:[А-ЯЁ][а-яё\\-]+|[А-ЯЁ]\\.?(?:\\s*[-–]\\s*[А-ЯЁ])?\\.?))+' +
+  ')' +
+  '(?:\\s*,\\s*[А-ЯЁ][а-яё\\-]*' + SURNAME_SUFFIX +
+    '(?:\\s*(?:[А-ЯЁ][а-яё\\-]+|[А-ЯЁ]\\.?(?:\\s*[-–]\\s*[А-ЯЁ])?\\.?))+' +
+  ')*' +
+  '\\s*$'
+);
 
 // Соответствие листов практики → специальность/курс
 const PRACTICE_SHEET_MAP = {
@@ -371,6 +388,7 @@ function parsePracticeSheet(sheet) {
  * колонок для каждого потока. В каждой паре строк: верхняя = 1 неделя,
  * нижняя = 2 неделя.
  */
+
 function parseLectureSheet(sheet, specialtyId) {
   const data = XLSX.utils.sheet_to_json(sheet, {
     header: 1, defval: '', blankrows: true, raw: false
@@ -398,6 +416,23 @@ function parseLectureSheet(sheet, specialtyId) {
     }
   }
 
+  // Хелпер: «нет нижней строки» → лекция идёт каждую неделю.
+  // Используется, когда:
+  //   • новая пара началась, а предыдущая не получила нижней строки;
+  //   • блок закончился, а открытая верхняя строка осталась.
+  //
+  // ВАЖНО: если нижняя строка физически ЕСТЬ и она пустая — это другая
+  // ситуация (только week 1). Её обрабатываем отдельно, обычной ветвью.
+  function emitBothWeeks(topRow, topDay, topTime, streamCols) {
+    if (!topRow || !topDay || !topTime) return;
+    for (const sc of streamCols) {
+      const val = clean(topRow[sc.col]);
+      if (!val) continue;
+      result.push(buildLecture(sc, topDay, 1, topTime, val, specialtyId));
+      result.push(buildLecture(sc, topDay, 2, topTime, val, specialtyId));
+    }
+  }
+
   // Обрабатываем каждый блок
   for (let bi = 0; bi < blockStarts.length; bi++) {
     const startCol = blockStarts[bi];
@@ -406,7 +441,6 @@ function parseLectureSheet(sheet, specialtyId) {
     const dayCol  = startCol;
     const timeCol = startCol + 1;
 
-    // Колонки потоков: те, у которых в заголовке есть «N КУРС (M ПОТОК). АУД. …»
     const streamCols = [];
     for (let c = startCol + 2; c < endCol; c++) {
       const hdr = parseHeader(headerRow[c]);
@@ -414,9 +448,10 @@ function parseLectureSheet(sheet, specialtyId) {
     }
     if (streamCols.length === 0) continue;
 
-    let currentDay  = null;
-    let currentTime = null;
-    let topRowIdx   = -1;
+    let currentDay  = null;    // текущий день (обновляется по ходу листа)
+    let currentTime = null;    // время открытой пары
+    let topRowIdx   = -1;      // индекс открытой верхней строки
+    let topRowDay   = null;    // день ВЕРХНЕЙ строки (важно фиксировать!)
 
     for (let r = headerRowIdx + 1; r < data.length; r++) {
       const row = data[r];
@@ -427,29 +462,48 @@ function parseLectureSheet(sheet, specialtyId) {
 
       const timeCell = clean(row[timeCol]);
 
-      // Время в колонке «Часы» открывает новую пару
+      // --- Время открывает новую пару ---
       if (timeCell && /^\d{1,2}:\d{2}/.test(timeCell)) {
+        // Если предыдущая пара не закрылась, а мы встретили новое время —
+        // значит нижней строки у неё НЕ БЫЛО → лекция идёт обе недели.
+        if (topRowIdx !== -1) {
+          emitBothWeeks(data[topRowIdx], topRowDay, currentTime, streamCols);
+          topRowIdx = -1;
+          topRowDay = null;
+        }
         currentTime = timeCell.replace(/\s+/g, '').split('-')[0] || timeCell;
         topRowIdx   = r;
+        topRowDay   = currentDay;
         continue;
       }
 
-      // Следующая строка после времени = нижняя половина пары (2 неделя)
-      if (topRowIdx === r - 1 && currentTime && currentDay) {
+      // --- Нижняя строка пары (строка физически есть, времени в ней нет) ---
+      if (topRowIdx === r - 1 && currentTime && topRowDay) {
         const topRow = data[topRowIdx];
         const botRow = row;
 
+        // Верх → week 1 ; низ → week 2.
+        // Если низ пустой — week 2 просто не добавится (week 1 only).
         for (const sc of streamCols) {
           const topVal = clean(topRow[sc.col]);
           const botVal = clean(botRow[sc.col]);
 
-          if (topVal) result.push(buildLecture(sc, currentDay, 1, currentTime, topVal, specialtyId));
-          if (botVal) result.push(buildLecture(sc, currentDay, 2, currentTime, botVal, specialtyId));
+          if (topVal) result.push(buildLecture(sc, topRowDay, 1, currentTime, topVal, specialtyId));
+          if (botVal) result.push(buildLecture(sc, topRowDay, 2, currentTime, botVal, specialtyId));
         }
 
         topRowIdx   = -1;
+        topRowDay   = null;
         currentTime = null;
       }
+    }
+
+    // Блок закончился, а открытая пара так и не получила нижней строки →
+    // лекция идёт обе недели.
+    if (topRowIdx !== -1) {
+      emitBothWeeks(data[topRowIdx], topRowDay, currentTime, streamCols);
+      topRowIdx = -1;
+      topRowDay = null;
     }
   }
 
@@ -558,14 +612,17 @@ function convert(workbook) {
     }
 
     // Лист практики
-    if (PRACTICE_SHEET_MAP[sheetName]) {
-      try {
-        practiceData[sheetName] = parsePracticeSheet(sheet);
-      } catch (e) {
-        warnings.push(`Ошибка на листе "${sheetName}": ${e.message}`);
-      }
-      continue;
-    }
+const practiceKey = Object.keys(PRACTICE_SHEET_MAP).find(k =>
+  k.toLowerCase() === sheetName.toLowerCase().trim()
+);
+if (practiceKey) {
+  try {
+    practiceData[practiceKey] = parsePracticeSheet(sheet);
+  } catch (e) {
+    warnings.push(`Ошибка на листе "${sheetName}": ${e.message}`);
+  }
+  continue;
+}
     // Прочие листы игнорируем
   }
 
@@ -675,9 +732,9 @@ function splitToFiles(big) {
     const courseNums = Object.keys(spec.courses).map(Number).sort((a, b) => a - b);
     if (courseNums.length === 0) continue;
 
-    const min = courseNums[0];
-    const max = courseNums[courseNums.length - 1];
-    const rangeKey = `${min}-${max}`;   // "4-6", "1-3" и т.д.
+const hasSenior = courseNums.some(n => n >= 4);
+const hasJunior = courseNums.some(n => n <= 3);
+const rangeKey  = hasSenior ? '4-6' : (hasJunior ? '1-3' : `${courseNums[0]}-${courseNums[courseNums.length-1]}`);   // "4-6", "1-3" и т.д.
 
     // Файл с курсами специальности
     files.push({

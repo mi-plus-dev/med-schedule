@@ -1,0 +1,109 @@
+{
+  "version": "2026-fall",
+  "holidays": [
+    {
+      "from": "2026-12-31",
+      "to": "2027-01-10",
+      "name": "Новогодние каникулы"
+    }
+  ],
+  "conspectsBasePath": "https://raw.githubusercontent.com/mi-plus-dev/med-schedule/main/",
+  "universities": {
+    "michgu": {
+      "shortName": "МиЧГУ",
+      "fullName": "Медицинский институт ЧГУ им. А.А. Кадырова",
+      "specialties": {
+        "lechebnoe": {
+          "name": "Лечебное дело",
+          "coursesFiles": {
+            "4-6": "https://raw.githubusercontent.com/mi-plus-dev/med-schedule/main/data/michgu/lechebnoe/4-6.json"
+          }
+        },
+        "pediatriya": {
+          "name": "Педиатрия",
+          "coursesFiles": {
+            "4-6": "https://raw.githubusercontent.com/mi-plus-dev/med-schedule/main/data/michgu/pediatriya/4-6.json"
+          }
+        },
+        "stomatologiya": {
+          "name": "Стоматология",
+          "coursesFiles": {
+            "4-6": "https://raw.githubusercontent.com/mi-plus-dev/med-schedule/main/data/michgu/stomatologiya/4-6.json"
+          }
+        }
+      }
+    }
+  },
+  "curriculumMap": {
+    "lechebnoe|4|Ак. и гин": "Акушерство",
+    "lechebnoe|4|Дерматовенерология": "",
+    "lechebnoe|4|Неврология": "",
+    "lechebnoe|4|Стоматология": "",
+    "lechebnoe|4|Суд.медицина": "",
+    "lechebnoe|4|Топ.анатомия": "",
+    "lechebnoe|4|Фак.терапия": "",
+    "lechebnoe|4|Фак.хирургия": "",
+    "lechebnoe|5|Ак. и гин": "Гинекология",
+    "lechebnoe|5|Аллергология": "",
+    "lechebnoe|5|Госп.терапия": "",
+    "lechebnoe|5|Госп.хирургия": "",
+    "lechebnoe|5|Инф.болезни": "",
+    "lechebnoe|5|ОЗЗ": "",
+    "lechebnoe|5|Офтальмология": "",
+    "lechebnoe|5|Педиатрия": "",
+    "lechebnoe|5|Психиатрия": "",
+    "lechebnoe|5|Травматология": "",
+    "lechebnoe|6|Анестезиология": "",
+    "lechebnoe|6|БЖД": "",
+    "lechebnoe|6|Госп.терапия": "",
+    "lechebnoe|6|Госп.хирургия": "",
+    "lechebnoe|6|Клин.фармакология": "",
+    "lechebnoe|6|Мед. реабилитация": "",
+    "lechebnoe|6|Онкология": "",
+    "lechebnoe|6|Пол.терапия": "",
+    "lechebnoe|6|Фтизиатрия": "",
+    "pediatriya|4|Ак. и гин": "Акушерство",
+    "pediatriya|4|Дерматовенерология": "",
+    "pediatriya|4|Неврология": "",
+    "pediatriya|4|Оториноларингология": "",
+    "pediatriya|4|Стоматология": "",
+    "pediatriya|4|Топ.анатомия": "",
+    "pediatriya|4|Фак.педиатрия": "",
+    "pediatriya|4|Фак.терапия": "",
+    "pediatriya|4|Фак.хирургия": "",
+    "pediatriya|5|Ак. и гин": "Гинекология",
+    "pediatriya|5|Акт. вопросы АМПДиП": "",
+    "pediatriya|5|Госп.терапия": "",
+    "pediatriya|5|Док.медицина": "",
+    "pediatriya|5|Инф.болезни": "",
+    "pediatriya|5|ОЗЗ": "",
+    "pediatriya|5|Пол. и неотл. педиатрия": "",
+    "pediatriya|5|Психиатрия": "",
+    "pediatriya|5|Травматология": "",
+    "pediatriya|5|Фак.педиатрия": "",
+    "pediatriya|5|Эпидемиология": "",
+    "pediatriya|6|БЖД": "",
+    "pediatriya|6|Госп.педиатрия": "",
+    "pediatriya|6|Госп.хирургия": "",
+    "pediatriya|6|Дет.хирургия": "",
+    "pediatriya|6|Онкология": "",
+    "pediatriya|6|Пол.и неот.педиатрия": "",
+    "pediatriya|6|Суд.медицина": "",
+    "pediatriya|6|Фтизиатрия": "",
+    "stomatologiya|4|Вн. болезни": "",
+    "stomatologiya|4|Заболевания головы и шеи": "",
+    "stomatologiya|4|Зубопротезирование": "",
+    "stomatologiya|4|Кариесология": "",
+    "stomatologiya|4|Мед.реабилитация": "",
+    "stomatologiya|4|Общ.хирургия": "",
+    "stomatologiya|4|Оториноларингология": "",
+    "stomatologiya|4|Офтальмология": "",
+    "stomatologiya|4|Психиатрия": "",
+    "stomatologiya|5|Детская ЧЛХ": "",
+    "stomatologiya|5|Детская стоматология": "",
+    "stomatologiya|5|Док. медицина": "",
+    "stomatologiya|5|Имплантология": "",
+    "stomatologiya|5|Мед. генетика": "",
+    "stomatologiya|5|Пародонтология": ""
+  }
+}

@@ -68,6 +68,32 @@
     background: #21262d; padding: 1px 6px; border-radius: 4px;
     font-family: ui-monospace, monospace; font-size: 12px;
   }
+
+  .gh-panel {
+    margin-top: 20px; padding: 16px 18px; border-radius: 10px;
+    background: #161b22; border: 1px solid #30363d;
+  }
+  .gh-panel h2 { font-size: 15px; color: #f0f6fc; margin-bottom: 10px; }
+  .gh-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .gh-row input[type="password"], .gh-row input[type="text"] {
+    flex: 1 1 240px; padding: 7px 10px; font-size: 13px;
+    background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+    color: #c9d1d9; font-family: ui-monospace, monospace;
+  }
+  .gh-row input:focus { outline: none; border-color: #58a6ff; }
+  .gh-hint { margin-top: 10px; font-size: 12px; color: #8b949e; line-height: 1.5; }
+  .gh-hint a { color: #58a6ff; }
+  .gh-status {
+    margin-top: 10px; font-size: 12.5px; font-family: ui-monospace, monospace;
+    white-space: pre-wrap;
+  }
+  .gh-status.ok  { color: #7ee787; }
+  .gh-status.err { color: #ffb3b3; }
+  .gh-file-status {
+    font-size: 12px; align-self: center; font-family: ui-monospace, monospace;
+  }
+  .gh-file-status.ok  { color: #7ee787; }
+  .gh-file-status.err { color: #ffb3b3; }
 </style>
 </head>
 <body>
@@ -87,8 +113,26 @@
   <!-- Карточки с готовыми файлами -->
   <div id="files"></div>
 
+  <!-- Публикация на GitHub -->
+  <div class="gh-panel" id="ghPanel" style="display:none">
+    <h2>Публикация на GitHub</h2>
+    <div class="gh-row">
+      <input type="password" id="ghToken" placeholder="GitHub token (fine-grained PAT)">
+      <button type="button" id="ghToggle" title="Показать/скрыть токен">👁</button>
+      <button type="button" id="ghPublishAll" class="primary">🚀 Опубликовать все файлы</button>
+    </div>
+    <div class="gh-hint">
+      Репозиторий: <b id="ghRepoLabel"></b>. Токен хранится только в памяти этой страницы
+      и пропадает при перезагрузке — никуда не сохраняется.
+      Нужен fine-grained PAT с доступом только к этому репозиторию и правом
+      <b>Contents: Read and write</b>. Создать токен:
+      <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">github.com/settings/personal-access-tokens/new</a>
+    </div>
+    <div class="gh-status" id="ghStatus"></div>
+  </div>
+
   <div class="note" id="howto" style="display:none">
-    <b>Как загрузить на GitHub:</b> открой репозиторий → <b>Add file → Create new file</b>
+    <b>Вручную (если не используешь кнопку «Опубликовать» выше):</b> открой репозиторий → <b>Add file → Create new file</b>
     → в поле имени введи <b>весь путь целиком</b> (например
     <code>data/michgu/lechebnoe/4-6.json</code>) → вставь содержимое → <b>Commit changes</b>.
   </div>
@@ -787,6 +831,22 @@ const statusEl= document.getElementById('status');
 const filesEl = document.getElementById('files');
 const howtoEl = document.getElementById('howto');
 
+const ghPanelEl     = document.getElementById('ghPanel');
+const ghTokenEl     = document.getElementById('ghToken');
+const ghToggleEl    = document.getElementById('ghToggle');
+const ghPublishAllEl= document.getElementById('ghPublishAll');
+const ghStatusEl    = document.getElementById('ghStatus');
+const ghRepoLabelEl = document.getElementById('ghRepoLabel');
+
+if (ghRepoLabelEl) {
+  ghRepoLabelEl.textContent = `${GITHUB_LOGIN}/${GITHUB_REPO} (${GITHUB_BRANCH})`;
+}
+if (ghToggleEl) {
+  ghToggleEl.addEventListener('click', () => {
+    ghTokenEl.type = ghTokenEl.type === 'password' ? 'text' : 'password';
+  });
+}
+
 let currentFiles = [];  // массив файлов, полученных после splitToFiles
 
 function showStatus(msg, type) {
@@ -854,8 +914,26 @@ function renderFiles(files) {
     btnCopy.textContent = '📋 Скопировать';
     btnCopy.onclick = () => copyText(f.content, btnCopy);
 
+    const btnPublish = document.createElement('button');
+    btnPublish.className = 'gh-file-btn';
+    btnPublish.textContent = '🚀 Опубликовать';
+    btnPublish.onclick = () => {
+      const token = ghTokenEl.value.trim();
+      if (!token) {
+        ghStatusEl.textContent = 'Вставь токен в панели «Публикация на GitHub» выше.';
+        ghStatusEl.className   = 'gh-status err';
+        return;
+      }
+      publishOne(f, token, ghFileStatus, btnPublish);
+    };
+
+    const ghFileStatus = document.createElement('span');
+    ghFileStatus.className = 'gh-file-status';
+
     row.appendChild(btnDl);
     row.appendChild(btnCopy);
+    row.appendChild(btnPublish);
+    row.appendChild(ghFileStatus);
 
     // Раскрывающийся предпросмотр (первые 4000 символов)
     const details = document.createElement('details');
@@ -876,6 +954,128 @@ function renderFiles(files) {
   }
 
   howtoEl.style.display = 'block';
+  if (ghPanelEl) ghPanelEl.style.display = 'block';
+}
+
+/* =====================================================================
+   8. ПУБЛИКАЦИЯ НА GITHUB (Contents API)
+   Коммитит файлы прямо из браузера — без ручного копирования в репо.
+   ===================================================================== */
+
+/** UTF-8-безопасный base64 (нужен из-за кириллицы в содержимом). */
+function toBase64Utf8(str) {
+  return btoa(unescape(encodeURIComponent(str)));
+}
+
+/** Достаёт message из ответа GitHub API об ошибке, если получится. */
+async function ghErrorMessage(res) {
+  try {
+    const data = await res.json();
+    return data.message || res.statusText;
+  } catch {
+    return res.statusText;
+  }
+}
+
+/** sha текущего файла в репо (нужен для обновления) или null, если файла ещё нет. */
+async function ghGetSha(path, token) {
+  const url = `https://api.github.com/repos/${GITHUB_LOGIN}/${GITHUB_REPO}/contents/${path}?ref=${GITHUB_BRANCH}`;
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `token ${token}`,
+      Accept: 'application/vnd.github+json'
+    }
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`не удалось прочитать файл (${res.status} ${await ghErrorMessage(res)})`);
+  const data = await res.json();
+  return data.sha;
+}
+
+/** Создаёт или обновляет один файл в репозитории через Contents API. */
+async function ghPutFile(path, content, token) {
+  const sha = await ghGetSha(path, token);
+  const url = `https://api.github.com/repos/${GITHUB_LOGIN}/${GITHUB_REPO}/contents/${path}`;
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers: {
+      Authorization: `token ${token}`,
+      Accept: 'application/vnd.github+json',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      message: `chore: обновить ${path}`,
+      content: toBase64Utf8(content),
+      branch:  GITHUB_BRANCH,
+      ...(sha ? { sha } : {})
+    })
+  });
+  if (!res.ok) throw new Error(`${res.status} ${await ghErrorMessage(res)}`);
+  return { updated: !!sha };
+}
+
+/** Публикует один файл, подсвечивая результат в статусе рядом с карточкой. */
+async function publishOne(f, token, statusEl, btn) {
+  if (btn) btn.disabled = true;
+  if (statusEl) { statusEl.textContent = '⏳ публикую…'; statusEl.className = 'gh-file-status'; }
+  try {
+    const r = await ghPutFile(f.path, f.content, token);
+    if (statusEl) {
+      statusEl.textContent = r.updated ? '✅ обновлено' : '✅ создано';
+      statusEl.className   = 'gh-file-status ok';
+    }
+    return { ok: true };
+  } catch (err) {
+    if (statusEl) {
+      statusEl.textContent = '❌ ' + err.message;
+      statusEl.className   = 'gh-file-status err';
+    }
+    return { ok: false, error: err.message };
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+/** Публикует все текущие файлы по очереди и показывает общий итог. */
+if (ghPublishAllEl) {
+  ghPublishAllEl.addEventListener('click', async () => {
+    const token = ghTokenEl.value.trim();
+    if (!token) {
+      ghStatusEl.textContent = 'Вставь токен перед публикацией.';
+      ghStatusEl.className   = 'gh-status err';
+      return;
+    }
+    if (currentFiles.length === 0) {
+      ghStatusEl.textContent = 'Сначала обработай XLSX — файлов пока нет.';
+      ghStatusEl.className   = 'gh-status err';
+      return;
+    }
+
+    ghPublishAllEl.disabled = true;
+    ghStatusEl.className = 'gh-status';
+
+    const fileBtns    = filesEl.querySelectorAll('button.gh-file-btn');
+    const fileStatuses= filesEl.querySelectorAll('span.gh-file-status');
+
+    const results = [];
+    for (let i = 0; i < currentFiles.length; i++) {
+      const f = currentFiles[i];
+      ghStatusEl.textContent = `Публикую ${f.path} (${i + 1}/${currentFiles.length})…`;
+      const r = await publishOne(f, token, fileStatuses[i], fileBtns[i]);
+      results.push({ path: f.path, ...r });
+    }
+
+    ghPublishAllEl.disabled = false;
+    const failed = results.filter(r => !r.ok);
+    if (failed.length === 0) {
+      ghStatusEl.textContent = `✅ Все ${results.length} файлов опубликованы в ${GITHUB_LOGIN}/${GITHUB_REPO}@${GITHUB_BRANCH}.`;
+      ghStatusEl.className   = 'gh-status ok';
+    } else {
+      ghStatusEl.textContent = `⚠ Опубликовано ${results.length - failed.length} из ${results.length}. Ошибки:\n` +
+        failed.map(r => `  ${r.path} — ${r.error}`).join('\n');
+      ghStatusEl.className = 'gh-status err';
+    }
+  });
 }
 
 /** Основной обработчик выбранного XLSX. */
